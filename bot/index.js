@@ -8,20 +8,63 @@ const {
 const express = require("express");
 const P = require("pino");
 const readline = require("readline");
+const fs = require("fs");
+
+// -----------------------------
+// IMPORT COMMANDS
+// -----------------------------
+
+const ai = require("./commands/ai");
+const ginfo = require("./commands/ginfo");
+const kick = require("./commands/kick");
+const promote = require("./commands/promote");
+const mute = require("./commands/mute");
+const unmute = require("./commands/unmute");
+const add = require("./commands/add");
+const reset = require("./commands/reset");
+const quiet = require("./commands/quiet");
+const speak = require("./commands/speak");
+
+// -----------------------------
+// IMPORT EVENTS
+// -----------------------------
+
+const antilink = require("./events/antilink");
+const reactions = require("./events/reactions");
+const welcome = require("./events/welcome");
+
+// -----------------------------
+// APP SETUP
+// -----------------------------
 
 const app = express();
-
 const PORT = process.env.PORT || 3000;
+
 const PREFIX = process.env.PREFIX || "!";
 const BOT_NAME = process.env.BOT_NAME || "NONSO AI";
 
+let sock;
 let pairingCode = "";
 let connectionStatus = "DISCONNECTED";
-let sock;
 let pairingRequested = false;
 
 // -----------------------------
-// WEB DASHBOARD
+// BOT STATE (quiet/speak)
+// -----------------------------
+
+const STATE_FILE = "./botstate.json";
+
+function loadState() {
+  if (!fs.existsSync(STATE_FILE)) return {};
+  return JSON.parse(fs.readFileSync(STATE_FILE));
+}
+
+function saveState(data) {
+  fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
+}
+
+// -----------------------------
+// DASHBOARD
 // -----------------------------
 
 app.get("/", (req, res) => {
@@ -31,18 +74,13 @@ app.get("/", (req, res) => {
   <!DOCTYPE html>
   <html>
   <head>
-
     <title>${BOT_NAME}</title>
 
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0"
-    >
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <style>
-
       body {
-        font-family: Arial, sans-serif;
+        font-family: Arial;
         background: #0f172a;
         color: white;
         text-align: center;
@@ -57,45 +95,22 @@ app.get("/", (req, res) => {
         margin: auto;
       }
 
-      h1 {
-        color: #38bdf8;
-      }
+      h1 { color: #38bdf8; }
 
-      .status {
-        margin-top: 15px;
-        font-size: 18px;
-      }
+      .status { margin-top: 10px; }
 
-      .online {
+      .online { color: #22c55e; }
+      .offline { color: #ef4444; }
+
+      .pair {
+        margin-top: 20px;
+        font-size: 30px;
+        letter-spacing: 4px;
         color: #22c55e;
-      }
-
-      .offline {
-        color: #ef4444;
-      }
-
-      .pair-box {
-        margin-top: 25px;
-        background: #0f172a;
-        padding: 15px;
-        border-radius: 10px;
-      }
-
-      .pair-code {
-        font-size: 35px;
-        letter-spacing: 5px;
         font-weight: bold;
-        color: #22c55e;
-      }
-
-      .footer {
-        margin-top: 25px;
-        font-size: 14px;
-        opacity: 0.7;
       }
 
     </style>
-
   </head>
 
   <body>
@@ -104,42 +119,15 @@ app.get("/", (req, res) => {
 
       <h1>${BOT_NAME}</h1>
 
-      <div class="
-        status
-        ${connectionStatus === "CONNECTED"
-          ? "online"
-          : "offline"}
-      ">
+      <div class="status ${connectionStatus === "CONNECTED" ? "online" : "offline"}">
         STATUS: ${connectionStatus}
       </div>
 
-      <div class="pair-box">
-
-        ${
-          pairingCode
-          ? `
-            <div class="pair-code">
-              ${pairingCode}
-            </div>
-
-            <p>
-              Open WhatsApp →
-              Linked Devices →
-              Link with phone number
-            </p>
-          `
-          : `
-            <p>
-              Waiting for pairing code...
-            </p>
-          `
-        }
-
+      <div class="pair">
+        ${pairingCode || "WAITING FOR PAIRING CODE..."}
       </div>
 
-      <div class="footer">
-        NONSO AI WhatsApp Bot
-      </div>
+      <p>NONSO AI WhatsApp Bot</p>
 
     </div>
 
@@ -150,20 +138,8 @@ app.get("/", (req, res) => {
 
 });
 
-// -----------------------------
-// KEEP RENDER ALIVE
-// -----------------------------
-
-app.get("/health", (req, res) => {
-  res.json({
-    status: "running",
-    bot: BOT_NAME,
-    connection: connectionStatus
-  });
-});
-
 app.listen(PORT, () => {
-  console.log(`🌐 Dashboard running on port ${PORT}`);
+  console.log("🌐 Dashboard running on port", PORT);
 });
 
 // -----------------------------
@@ -181,238 +157,171 @@ async function startBot() {
   sock = makeWASocket({
 
     version,
-
-    logger: P({
-      level: "silent"
-    }),
-
+    logger: P({ level: "silent" }),
     auth: state,
-
-    browser: [
-      "NONSO AI",
-      "Chrome",
-      "1.0.0"
-    ]
+    printQRInTerminal: false,
+    browser: ["NONSO AI", "Chrome", "1.0.0"]
 
   });
 
-  sock.ev.on(
-    "creds.update",
-    saveCreds
-  );
+  sock.ev.on("creds.update", saveCreds);
 
   // -----------------------------
   // PAIRING CODE
   // -----------------------------
 
-  if (
-    !sock.authState.creds.registered &&
-    !pairingRequested
-  ) {
+  if (!sock.authState.creds.registered && !pairingRequested) {
 
     pairingRequested = true;
 
-    const rl =
-      readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-      });
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
 
-    rl.question(
-      "Enter WhatsApp number (234xxxxxxxxxx): ",
-      async (number) => {
+    rl.question("Enter WhatsApp number: ", async (number) => {
 
-        try {
+      try {
 
-          const code =
-            await sock.requestPairingCode(number);
+        const code = await sock.requestPairingCode(number);
 
-          pairingCode = code;
+        pairingCode = code;
 
-          console.log(
-            `📲 Pairing Code: ${code}`
-          );
+        console.log("PAIRING CODE:", code);
 
-          rl.close();
+        rl.close();
 
-        } catch (err) {
-
-          console.log(
-            "PAIRING ERROR:",
-            err
-          );
-
-        }
-
+      } catch (err) {
+        console.log("PAIRING ERROR:", err);
       }
-    );
+
+    });
 
   }
 
   // -----------------------------
-  // CONNECTION UPDATE
+  // CONNECTION
   // -----------------------------
 
-  sock.ev.on(
-    "connection.update",
-    async (update) => {
+  sock.ev.on("connection.update", (update) => {
 
-      const {
-        connection,
-        lastDisconnect
-      } = update;
+    const { connection, lastDisconnect } = update;
 
-      if (connection === "open") {
+    if (connection === "open") {
+      connectionStatus = "CONNECTED";
+      pairingCode = "";
+      console.log("✅ NONSO AI CONNECTED");
+    }
 
-        connectionStatus = "CONNECTED";
+    if (connection === "close") {
 
-        pairingCode = "";
+      connectionStatus = "DISCONNECTED";
 
-        console.log(
-          `✅ ${BOT_NAME} CONNECTED`
-        );
+      const shouldReconnect =
+        lastDisconnect?.error?.output?.statusCode !==
+        DisconnectReason.loggedOut;
 
-      }
-
-      if (connection === "close") {
-
-        connectionStatus = "DISCONNECTED";
-
-        console.log(
-          "❌ CONNECTION CLOSED"
-        );
-
-        const shouldReconnect =
-          lastDisconnect?.error?.output
-            ?.statusCode !==
-          DisconnectReason.loggedOut;
-
-        if (shouldReconnect) {
-
-          console.log(
-            "🔄 RECONNECTING..."
-          );
-
-          startBot();
-
-        }
-
-      }
+      if (shouldReconnect) startBot();
 
     }
-  );
+
+  });
 
   // -----------------------------
-  // MESSAGE LISTENER
+  // MESSAGES
   // -----------------------------
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
 
-  try {
+    try {
 
-    const msg = messages[0];
-    if (!msg.message) return;
+      const msg = messages[0];
+      if (!msg.message) return;
 
-    const from = msg.key.remoteJid;
+      const from = msg.key.remoteJid;
+      const isGroup = from.endsWith("@g.us");
 
-    const isGroup = from.endsWith("@g.us");
-    const isDM = from.endsWith("@s.whatsapp.net");
+      const body =
+        msg.message.conversation ||
+        msg.message.extendedTextMessage?.text ||
+        msg.message.imageMessage?.caption ||
+        msg.message.videoMessage?.caption ||
+        "";
 
-    const body =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      msg.message.imageMessage?.caption ||
-      msg.message.videoMessage?.caption ||
-      "";
+      if (!body) return;
 
-    if (!body) return;
+      const state = loadState();
+      const isQuiet = state[from] === "quiet";
 
-    console.log("MESSAGE:", body);
+      console.log("MESSAGE:", body);
 
-    // --------------------------
-    // GROUP MODE (COMMAND BASED)
-    // --------------------------
+      // -----------------------------
+      // EVENTS
+      // -----------------------------
 
-    if (isGroup && body.startsWith(PREFIX)) {
+      antilink(sock, msg, from);
+      reactions(sock, msg, from);
 
-      const args = body.trim().split(" ");
-      const command = args[0].toLowerCase();
+      // -----------------------------
+      // GROUP COMMANDS
+      // -----------------------------
 
-      const ai = require("./commands/ai");
-      const ginfo = require("./commands/ginfo");
-      const kick = require("./commands/kick");
-      const promote = require("./commands/promote");
-      const mute = require("./commands/mute");
-      const unmute = require("./commands/unmute");
-      const add = require("./commands/add");
-      const reset = require("./commands/reset");
+      if (isGroup && body.startsWith(PREFIX)) {
 
-      if (command === "!ai") return ai(sock, msg, body, from);
-      if (command === "!ginfo") return ginfo(sock, msg, from);
-      if (command === "!kick") return kick(sock, msg, from);
-      if (command === "!promote") return promote(sock, msg, from);
-      if (command === "!mute") return mute(sock, msg, from);
-      if (command === "!unmute") return unmute(sock, msg, from);
-      if (command === "!add") return add(sock, msg, from);
-      if (command === "!reset") return reset(sock, msg, from);
-
-    }
-
-    // --------------------------
-    // DM MODE (AUTO AI CHAT)
-    // --------------------------
-
-    if (isDM) {
-
-      const ai = require("./commands/ai");
-
-      // fake "!ai" prefix internally
-      const fakeMsg = {
-        ...msg,
-        message: {
-          conversation: `!ai ${body}`
-        }
-      };
-
-      return ai(sock, fakeMsg, fakeMsg.message.conversation, from);
-
-    }
-
-  } catch (err) {
-
-    console.log("MESSAGE ERROR:", err);
-
-  }
-
-});
-        // -----------------------------
-        // TEST COMMAND
-        // -----------------------------
-
-        if (
-          body === `${PREFIX}ping`
-        ) {
-
-          await sock.sendMessage(
-            from,
-            {
-              text: "🏓 Pong"
-            }
-          );
-
+        if (isQuiet) {
+          return sock.sendMessage(from, {
+            text: "🔇 Bot is in quiet mode for this chat."
+          });
         }
 
-      } catch (err) {
+        const args = body.split(" ");
+        const command = args[0].toLowerCase();
 
-        console.log(
-          "MESSAGE ERROR:",
-          err
-        );
+        if (command === "!ai") return ai(sock, msg, body, from);
+        if (command === "!ginfo") return ginfo(sock, msg, from);
+        if (command === "!kick") return kick(sock, msg, from);
+        if (command === "!promote") return promote(sock, msg, from);
+        if (command === "!mute") return mute(sock, msg, from);
+        if (command === "!unmute") return unmute(sock, msg, from);
+        if (command === "!add") return add(sock, msg, from);
+        if (command === "!reset") return reset(sock, msg, from);
+        if (command === "!quiet") return quiet(sock, msg, from);
+        if (command === "!speak") return speak(sock, msg, from);
 
       }
 
+      // -----------------------------
+      // DM MODE (AUTO AI)
+      // -----------------------------
+
+      if (!isGroup) {
+
+        if (isQuiet) return;
+
+        const fakeMsg = {
+          ...msg,
+          message: {
+            conversation: `!ai ${body}`
+          }
+        };
+
+        return ai(sock, fakeMsg, fakeMsg.message.conversation, from);
+
+      }
+
+    } catch (err) {
+      console.log("MESSAGE ERROR:", err);
     }
-  );
+
+  });
+
+  // -----------------------------
+  // WELCOME EVENTS
+  // -----------------------------
+
+  sock.ev.on("group-participants.update", (update) => {
+    welcome(sock, update);
+  });
 
 }
 
