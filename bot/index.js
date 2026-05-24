@@ -306,41 +306,121 @@ async function startBot() {
   // MESSAGE LISTENER
   // -----------------------------
 
-  sock.ev.on(
-    "messages.upsert",
-    async ({ messages }) => {
+  sock.ev.on("messages.upsert", async ({ messages }) => {
 
-      try {
+  try {
 
-        const msg = messages[0];
+    const msg = messages[0];
 
-        if (!msg.message) return;
+    if (!msg.message) return;
 
-        const from =
-          msg.key.remoteJid;
+    const from = msg.key.remoteJid;
 
-        const body =
-          msg.message.conversation ||
+    const isGroup = from.endsWith("@g.us");
+    const isDM = from.endsWith("@s.whatsapp.net");
 
-          msg.message
-            .extendedTextMessage
-            ?.text ||
+    const body =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      msg.message.imageMessage?.caption ||
+      msg.message.videoMessage?.caption ||
+      "";
 
-          msg.message
-            .imageMessage
-            ?.caption ||
+    const sender = isGroup
+      ? msg.key.participant
+      : from;
 
-          msg.message
-            .videoMessage
-            ?.caption ||
+    console.log("MESSAGE:", body);
 
-          "";
+    // --------------------------
+    // IGNORE EMPTY MESSAGES
+    // --------------------------
 
-        console.log(
-          "MESSAGE:",
-          body
-        );
+    if (!body) return;
 
+    // --------------------------
+    // COMMAND ROUTER (GLOBAL)
+    // --------------------------
+
+    if (body.startsWith(PREFIX)) {
+
+      const args = body.trim().split(" ");
+      const command = args[0].toLowerCase();
+
+      // --------------------------
+      // LOAD COMMAND FILES
+      // --------------------------
+
+      const ai = require("./commands/ai");
+      const ginfo = require("./commands/ginfo");
+      const kick = require("./commands/kick");
+      const promote = require("./commands/promote");
+      const mute = require("./commands/mute");
+      const unmute = require("./commands/unmute");
+      const add = require("./commands/add");
+      const reset = require("./commands/reset");
+
+      // --------------------------
+      // ROUTING COMMANDS
+      // --------------------------
+
+      if (command === "!ai") {
+        return ai(sock, msg, body, from);
+      }
+
+      if (command === "!ginfo") {
+        return ginfo(sock, msg, from);
+      }
+
+      if (command === "!kick") {
+        return kick(sock, msg, from);
+      }
+
+      if (command === "!promote") {
+        return promote(sock, msg, from);
+      }
+
+      if (command === "!mute") {
+        return mute(sock, msg, from);
+      }
+
+      if (command === "!unmute") {
+        return unmute(sock, msg, from);
+      }
+
+      if (command === "!add") {
+        return add(sock, msg, from);
+      }
+
+      if (command === "!reset") {
+        return reset(sock, msg, from);
+      }
+
+    }
+
+    // --------------------------
+    // DM AUTO RESPONSE (OPTIONAL)
+    // --------------------------
+
+    if (isDM) {
+
+      if (body.toLowerCase().includes("hi")) {
+
+        await sock.sendMessage(from, {
+          text: `👋 Hello! I am NONSO AI.\nType !ai to chat with me.`
+        });
+
+      }
+
+    }
+
+  } catch (err) {
+
+    console.log("MESSAGE HANDLER ERROR:", err);
+
+  }
+
+});
         // -----------------------------
         // TEST COMMAND
         // -----------------------------
