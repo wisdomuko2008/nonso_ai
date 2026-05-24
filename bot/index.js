@@ -10,49 +10,23 @@ const P = require("pino");
 const readline = require("readline");
 const fs = require("fs");
 
-// -----------------------------
-// IMPORT COMMANDS
-// -----------------------------
-
-const ai = require("./commands/ai");
-const ginfo = require("./commands/ginfo");
-const kick = require("./commands/kick");
-const promote = require("./commands/promote");
-const mute = require("./commands/mute");
-const unmute = require("./commands/unmute");
-const add = require("./commands/add");
-const reset = require("./commands/reset");
-const quiet = require("./commands/quiet");
-const speak = require("./commands/speak");
-
-// -----------------------------
-// IMPORT EVENTS
-// -----------------------------
-
-const antilink = require("./events/antilink");
-const reactions = require("./events/reactions");
-const welcome = require("./events/welcome");
-
-// -----------------------------
-// APP SETUP
-// -----------------------------
-
 const app = express();
-const PORT = process.env.PORT || 3000;
 
+const PORT = process.env.PORT || 3000;
 const PREFIX = process.env.PREFIX || "!";
 const BOT_NAME = process.env.BOT_NAME || "NONSO AI";
 
-let sock;
 let pairingCode = "";
 let connectionStatus = "DISCONNECTED";
+let sock;
 let pairingRequested = false;
 
 // -----------------------------
-// BOT STATE (quiet/speak)
+// BOT STATE FILES
 // -----------------------------
 
 const STATE_FILE = "./botstate.json";
+const SPAM_FILE = "./antispam.json";
 
 function loadState() {
   if (!fs.existsSync(STATE_FILE)) return {};
@@ -63,8 +37,13 @@ function saveState(data) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
 }
 
+let spamDB = {};
+if (fs.existsSync(SPAM_FILE)) {
+  spamDB = JSON.parse(fs.readFileSync(SPAM_FILE));
+}
+
 // -----------------------------
-// DASHBOARD
+// WEB DASHBOARD
 // -----------------------------
 
 app.get("/", (req, res) => {
@@ -74,6 +53,7 @@ app.get("/", (req, res) => {
   <!DOCTYPE html>
   <html>
   <head>
+
     <title>${BOT_NAME}</title>
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -102,15 +82,10 @@ app.get("/", (req, res) => {
       .online { color: #22c55e; }
       .offline { color: #ef4444; }
 
-      .pair {
-        margin-top: 20px;
-        font-size: 30px;
-        letter-spacing: 4px;
-        color: #22c55e;
-        font-weight: bold;
-      }
+      .pair { font-size: 30px; color: #22c55e; font-weight: bold; }
 
     </style>
+
   </head>
 
   <body>
@@ -119,15 +94,13 @@ app.get("/", (req, res) => {
 
       <h1>${BOT_NAME}</h1>
 
-      <div class="status ${connectionStatus === "CONNECTED" ? "online" : "offline"}">
+      <div class="${connectionStatus === "CONNECTED" ? "online" : "offline"}">
         STATUS: ${connectionStatus}
       </div>
 
       <div class="pair">
         ${pairingCode || "WAITING FOR PAIRING CODE..."}
       </div>
-
-      <p>NONSO AI WhatsApp Bot</p>
 
     </div>
 
@@ -187,7 +160,7 @@ async function startBot() {
 
         pairingCode = code;
 
-        console.log("PAIRING CODE:", code);
+        console.log("📲 Pairing Code:", code);
 
         rl.close();
 
@@ -228,6 +201,14 @@ async function startBot() {
   });
 
   // -----------------------------
+  // EVENTS
+  // -----------------------------
+
+  const antilink = require("./events/antilink");
+  const reactions = require("./events/reactions");
+  const welcome = require("./events/welcome");
+
+  // -----------------------------
   // MESSAGES
   // -----------------------------
 
@@ -250,10 +231,67 @@ async function startBot() {
 
       if (!body) return;
 
+      console.log("MESSAGE:", body);
+
+      // -----------------------------
+      // SPAM SYSTEM
+      // -----------------------------
+
+      const now = Date.now();
+
+      if (!spamDB[from]) spamDB[from] = [];
+
+      spamDB[from].push(now);
+
+      spamDB[from] = spamDB[from].filter(t => now - t < 7000);
+
+      const isSpamming = spamDB[from].length >= 5;
+
+      if (isSpamming && isGroup) {
+
+        spamDB[from] = [];
+
+        if (!global.warns) global.warns = {};
+        if (!global.warns[from]) global.warns[from] = 0;
+
+        global.warns[from]++;
+
+        if (global.warns[from] < 2) {
+
+          return sock.sendMessage(from, {
+            text: `⚠️ ANTI-SPAM WARNING (${global.warns[from]}/2)`
+          });
+
+        } else {
+
+          try {
+
+            await sock.groupParticipantsUpdate(
+              from,
+              [msg.key.participant],
+              "remove"
+            );
+
+            global.warns[from] = 0;
+
+            return sock.sendMessage(from, {
+              text: "⛔ User removed for spam"
+            });
+
+          } catch (err) {
+            console.log("AUTO KICK ERROR:", err);
+          }
+
+        }
+
+      }
+
+      // -----------------------------
+      // STATE (QUIET MODE)
+      // -----------------------------
+
       const state = loadState();
       const isQuiet = state[from] === "quiet";
-
-      console.log("MESSAGE:", body);
 
       // -----------------------------
       // EVENTS
@@ -270,12 +308,23 @@ async function startBot() {
 
         if (isQuiet) {
           return sock.sendMessage(from, {
-            text: "🔇 Bot is in quiet mode for this chat."
+            text: "🔇 Bot is in quiet mode"
           });
         }
 
         const args = body.split(" ");
         const command = args[0].toLowerCase();
+
+        const ai = require("./commands/ai");
+        const ginfo = require("./commands/ginfo");
+        const kick = require("./commands/kick");
+        const promote = require("./commands/promote");
+        const mute = require("./commands/mute");
+        const unmute = require("./commands/unmute");
+        const add = require("./commands/add");
+        const reset = require("./commands/reset");
+        const quiet = require("./commands/quiet");
+        const speak = require("./commands/speak");
 
         if (command === "!ai") return ai(sock, msg, body, from);
         if (command === "!ginfo") return ginfo(sock, msg, from);
@@ -298,6 +347,8 @@ async function startBot() {
 
         if (isQuiet) return;
 
+        const ai = require("./commands/ai");
+
         const fakeMsg = {
           ...msg,
           message: {
@@ -307,6 +358,14 @@ async function startBot() {
 
         return ai(sock, fakeMsg, fakeMsg.message.conversation, from);
 
+      }
+
+      // -----------------------------
+      // TEST COMMAND
+      // -----------------------------
+
+      if (body === `${PREFIX}ping`) {
+        return sock.sendMessage(from, { text: "🏓 Pong" });
       }
 
     } catch (err) {
