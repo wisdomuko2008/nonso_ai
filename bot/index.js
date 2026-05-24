@@ -311,7 +311,6 @@ async function startBot() {
   try {
 
     const msg = messages[0];
-
     if (!msg.message) return;
 
     const from = msg.key.remoteJid;
@@ -326,30 +325,18 @@ async function startBot() {
       msg.message.videoMessage?.caption ||
       "";
 
-    const sender = isGroup
-      ? msg.key.participant
-      : from;
+    if (!body) return;
 
     console.log("MESSAGE:", body);
 
     // --------------------------
-    // IGNORE EMPTY MESSAGES
+    // GROUP MODE (COMMAND BASED)
     // --------------------------
 
-    if (!body) return;
-
-    // --------------------------
-    // COMMAND ROUTER (GLOBAL)
-    // --------------------------
-
-    if (body.startsWith(PREFIX)) {
+    if (isGroup && body.startsWith(PREFIX)) {
 
       const args = body.trim().split(" ");
       const command = args[0].toLowerCase();
-
-      // --------------------------
-      // LOAD COMMAND FILES
-      // --------------------------
 
       const ai = require("./commands/ai");
       const ginfo = require("./commands/ginfo");
@@ -360,63 +347,40 @@ async function startBot() {
       const add = require("./commands/add");
       const reset = require("./commands/reset");
 
-      // --------------------------
-      // ROUTING COMMANDS
-      // --------------------------
-
-      if (command === "!ai") {
-        return ai(sock, msg, body, from);
-      }
-
-      if (command === "!ginfo") {
-        return ginfo(sock, msg, from);
-      }
-
-      if (command === "!kick") {
-        return kick(sock, msg, from);
-      }
-
-      if (command === "!promote") {
-        return promote(sock, msg, from);
-      }
-
-      if (command === "!mute") {
-        return mute(sock, msg, from);
-      }
-
-      if (command === "!unmute") {
-        return unmute(sock, msg, from);
-      }
-
-      if (command === "!add") {
-        return add(sock, msg, from);
-      }
-
-      if (command === "!reset") {
-        return reset(sock, msg, from);
-      }
+      if (command === "!ai") return ai(sock, msg, body, from);
+      if (command === "!ginfo") return ginfo(sock, msg, from);
+      if (command === "!kick") return kick(sock, msg, from);
+      if (command === "!promote") return promote(sock, msg, from);
+      if (command === "!mute") return mute(sock, msg, from);
+      if (command === "!unmute") return unmute(sock, msg, from);
+      if (command === "!add") return add(sock, msg, from);
+      if (command === "!reset") return reset(sock, msg, from);
 
     }
 
     // --------------------------
-    // DM AUTO RESPONSE (OPTIONAL)
+    // DM MODE (AUTO AI CHAT)
     // --------------------------
 
     if (isDM) {
 
-      if (body.toLowerCase().includes("hi")) {
+      const ai = require("./commands/ai");
 
-        await sock.sendMessage(from, {
-          text: `👋 Hello! I am NONSO AI.\nType !ai to chat with me.`
-        });
+      // fake "!ai" prefix internally
+      const fakeMsg = {
+        ...msg,
+        message: {
+          conversation: `!ai ${body}`
+        }
+      };
 
-      }
+      return ai(sock, fakeMsg, fakeMsg.message.conversation, from);
 
     }
 
   } catch (err) {
 
-    console.log("MESSAGE HANDLER ERROR:", err);
+    console.log("MESSAGE ERROR:", err);
 
   }
 
